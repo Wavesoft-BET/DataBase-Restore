@@ -11,7 +11,7 @@ WHere FTPLocation LIKE '%10.3.2.191%'
 -- [dbo].[XMLImport_Greyhound]
 -- [dbo].[XMLImport_eOddsMaker]
 -- [dbo].[ImportTXTInternationalFeeds] 
--- [dbo].[
+-- [dbo].[XMLImport_SISHorseRacing]
  
 UPDATE [EIS].[dbo].SystemSettings
 SET SystemSettingValue = '\\10.3.104.104\RaceFileOutput\\'
