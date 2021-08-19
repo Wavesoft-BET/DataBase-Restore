@@ -73,12 +73,12 @@ AND definition LIKE '%' + @SearchText + '%')) AS T
 ORDER BY T.SPName
 
 
-DECLARE @SearchPush varchar(1000) = '10.3.2.65';
+DECLARE @SearchPush varchar(1000) = '10.3.2.65'; --Replace with 10.3.104.103
 
 SELECT DISTINCT SPName
 FROM ((SELECT ROUTINE_NAME SPName
 FROM INFORMATION_SCHEMA.ROUTINES
-WHERE ROUTINE_DEFINITION LIKE '%' + @SearchText + '%'
+WHERE ROUTINE_DEFINITION LIKE '%' + @SearchPush + '%'
 AND ROUTINE_TYPE='PROCEDURE')
 UNION ALL
 (SELECT OBJECT_NAME(id) SPName
@@ -90,15 +90,15 @@ UNION ALL
 (SELECT OBJECT_NAME(object_id) SPName
 FROM sys.sql_modules
 WHERE OBJECTPROPERTY(object_id, 'IsProcedure') = 1
-AND definition LIKE '%' + @SearchText + '%')) AS T
+AND definition LIKE '%' + @SearchPush + '%')) AS T
 ORDER BY T.SPName
 
-DECLARE @SearchMoz varchar(1000) = 'moz-syx-sql1';
+DECLARE @SearchMoz varchar(1000) = 'moz-syx-sql1'; --Replace with 10.3.105.101
 
 SELECT DISTINCT SPName
 FROM ((SELECT ROUTINE_NAME SPName
 FROM INFORMATION_SCHEMA.ROUTINES
-WHERE ROUTINE_DEFINITION LIKE '%' + @SearchText + '%'
+WHERE ROUTINE_DEFINITION LIKE '%' + @SearchMoz + '%'
 AND ROUTINE_TYPE='PROCEDURE')
 UNION ALL
 (SELECT OBJECT_NAME(id) SPName
@@ -110,5 +110,5 @@ UNION ALL
 (SELECT OBJECT_NAME(object_id) SPName
 FROM sys.sql_modules
 WHERE OBJECTPROPERTY(object_id, 'IsProcedure') = 1
-AND definition LIKE '%' + @SearchText + '%')) AS T
+AND definition LIKE '%' + @SearchMoz + '%')) AS T
 ORDER BY T.SPName
