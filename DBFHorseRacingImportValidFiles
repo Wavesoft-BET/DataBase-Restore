@@ -1,0 +1,508 @@
+USE [EISImport]
+GO
+/****** Object:  StoredProcedure [dbo].[DBFHorseRacingImportValidFiles]    Script Date: 10-Sep-21 14:11:01 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- Batch submitted through debugger: SQLQuery2.sql|7|0|C:\Users\PhilaneS\AppData\Local\Temp\3\~vsC9E0.sql
+-- Batch submitted through debugger: SQLQuery18.sql|7|0|C:\Users\yugann\AppData\Local\Temp\~vsF825.sql
+-- Batch submitted through debugger: SQLQuery4.sql|7|0|C:\Users\ADMINI~1.WF\AppData\Local\Temp\2\~vs1B2.sql
+-- =============================================
+-- Author:		Vance Steyn	
+-- Create date: 2013-04-10
+-- Description:	Merges Winning Forms Event and  Horse Racing Data from DBF into HorseRacingImport
+-- Modified : Chetan Dodia
+-- Status : Fixed the bug which create new race instead of merge in to same existing race and added silkhistory for displays
+--
+-- Modified by : Chetan Dodia
+-- Modify Date : 2020-10-09
+-- Description : Changed Form History File name from 'A' to 'F' 
+
+--
+-- Modified by : Leroy Warner
+-- Modify Date : 2021-07-05
+-- Description : Add Horse Age and Url to image 
+-- =============================================
+ALTER PROCEDURE [dbo].[DBFHorseRacingImportValidFiles] --WITH EXECUTE AS 'MSSQLSERVER'
+
+AS
+BEGIN
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	SET NOCOUNT ON;
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+--Retrieves all DBF files in DIR
+DECLARE @files TABLE (ID int IDENTITY(1,1), [FileName] varchar(100))
+INSERT INTO @files 
+--EXEC  xp_cmdshell 'dir c:\dbase\*.dbf /b' 
+EXEC  xp_cmdshell 'dir H:\Incoming\dbase\*.dbf /b' 
+
+
+--Temporal Table to hold the file information
+
+CREATE TABLE #tempFiles
+(
+	FileNumber INT  NOT NULL PRIMARY KEY,
+	[FileName] NVARCHAR(15) null,
+	FileNameLen INT NULL,
+	RaceCode VARCHAR(2) NULL,
+	RaceDateString VARCHAR(6) null,
+	RaceDate DATE NULL
+)
+
+--Inserts Future including today Race Header DBF Files into temp  table
+	INSERT INTO #tempFiles 
+	SELECT ROW_Number() OVER (ORDER BY [FileName]) as FileNumber,
+	[FileName],
+	Len([FileName]) as FileNameLen,
+	RaceCode = CASE Len([FileName])
+		WHEN 12 THEN SUBSTRING([FileName],2,1)
+		WHEN 13 THEN SUBSTRING([FileName],2,2)
+	END,
+	SUBSTRING([FileName],lEN([FileName]) - 9,6),
+	SUBSTRING([FileName],lEN([FileName]) - 9,6)
+	from @files where [FileName] like 'R%'  AND LEN([FileName]) > 8
+	AND Convert(date,SUBSTRING([FileName],lEN([FileName]) - 9,6)) >= Convert(date,Getdate()) 
+
+--select * from #tempFiles
+
+
+--Temporal Table to hold event information
+CREATE TABLE #tempEvent
+(
+	[tempEvenID] bigint identity(1,1) primary key not null,
+	[tempEventDescription] [nvarchar](100) NULL,
+	[tempEventNumber] [tinyint] NULL,
+	[tempEventStartDateTime] [nvarchar](15) NULL,
+	[tempEventDistance] [decimal](10, 2) NULL,
+)
+
+--Temporal table to hold market information
+CREATE TABLE #tempMarket
+(
+	[tempMarkertID] bigint identity(1,1) primary key not null,
+	[tempRaceNo] int Null,
+	[tempHorse] [nvarchar](50) NULL,
+	[tempHorseNum] [int] NULL,
+	[tempDrawNo] [int] NULL,
+	[tempFirstTimer] [bit] NULL,
+	[tempOwner] nvarchar(150) NULL,
+	tempTrainer nvarchar(50) NULL,
+	tempJockey nvarchar(50) NULL,
+	tempJockeyColors nvarchar(150) NULL,
+	tempBreeder nvarchar(50) NULL,
+	tempSex char(1) NULL,
+	tempColour varchar(10) NULL,
+	tempWeight decimal(6,2) NULL,
+	tempWeightAllowed decimal(6,2) NULL,
+	tempSire nvarchar(50) NULL,
+	tempDam nvarchar(50) NULL,
+	tempRuns int NULL,
+	tempWins int NULL,
+	tempPlaces int NULL,
+	tempComments nvarchar(200) NULL,
+	tempImagePath nvarchar(50) NULL,
+	tempMarketOdd decimal(18,2) null,
+	tempHorseAge int NULL,
+	tempURL nvarchar(200) NULL
+)
+
+
+CREATE TABLE #tempMarketHistory
+(
+	[#tempMarketHistoryID] bigint identity(1,1) primary key not null,
+	[tempHistoryRaceNo] int Null,
+	[tempHistoryHorse] [nvarchar](50) NULL,
+	[tempHistoryHorseNum] [int] NULL,
+	[tempHistoryRaceDate] [datetime] null,
+	[tempHistoryRaceDistance] [int] null,
+	tempHistoryJockey nvarchar(50) NULL,
+	tempHistoryWeight decimal(6,2) NULL,
+	tempHistoryFinishingPositions int NULL,
+	[tempHistoryTotalRunners] [int] NULL,
+	tempHistoryComments nvarchar(200) NULL,
+	tempHistoryWeightAllowed decimal(6,2) NULL,
+	tempHistoryWeightAdjustment decimal(6,2) NULL
+)
+/**
+Now we have files populated on the #temfiles
+Processes files from #tempFilese
+**/
+DECLARE @SQL NVARCHAR(1000)
+DECLARE @FileNumber INT
+DECLARE @DBFRaceFileName NVARCHAR(20)
+DECLARE @RaceTrackCode NVARCHAR(6)
+DECLARE @FileDate NVARCHAR(6) 
+
+Declare @DBFHorseFileName nvarchar(12)
+Declare @DBFHorseHistoryFileName nvarchar(12)
+
+DECLARE @TournamentName  NVARCHAR(50)
+DECLARE @CreatedDateTime DATETIME = GETDATE()
+DECLARE @TournamentID BIGINT
+DECLARE @FeedTournamentID BIGINT = 0
+DECLARE @CountryID INT
+
+
+DECLARE @EventID BIGINT
+DECLARE @EventName NVARCHAR(50)
+DECLARE @EventDescription NVARCHAR(100)
+DECLARE @EventNumber TINYINT
+DECLARE @EventStartDateTime DATETIME
+DECLARE @EventDistance DECIMAL(10,2)
+
+DECLARE @MarketID BIGINT
+DECLARE @MarketName NVARCHAR(50)
+DECLARE @MarketNumber INT
+DECLARE @StartPosition INT
+DECLARE @FirstTimer BIT
+DECLARE @Owner NVARCHAR(150)
+DECLARE @Trainer NVARCHAR(50)
+DECLARE @Jockey NVARCHAR(50)
+DECLARE @JockeyColors NVARCHAR(150)
+DECLARE @Breeder NVARCHAR(50)
+DECLARE @Sex CHAR(1)
+DECLARE @Colour NVARCHAR(10)
+DECLARE @Weight DECIMAL(6,2)
+DECLARE @WeightAllowed DECIMAL(6,2)
+DECLARE @Sire NVARCHAR(50)
+DECLARE @Dam NVARCHAR(50)
+DECLARE @Runs INT
+DECLARE @Wins INT
+DECLARE @Places INT
+DECLARE @Comments NVARCHAR(200)
+DECLARE @MarketOdd DECIMAL(18,2)
+DECLARE @Age INT
+DECLARE @URL NVARCHAR(200)
+DECLARE @VenueName NVARCHAR(200)
+
+DECLARE @INSERTED_EventID BIGINT
+DECLARE @INSERTED_MarketID BIGINT
+DECLARE @INSERTED_SilkID BIGINT
+
+
+DECLARE @HistoryRaceNo int 
+DECLARE @HistoryHorse [nvarchar](50) 
+DECLARE @HistoryHorseNum [int] 
+DECLARE @HistoryRaceDate [datetime] 
+DECLARE @HistoryRaceDistance [int] 
+DECLARE @HistoryJockey nvarchar(50) 
+DECLARE @HistoryWeight decimal(6,2) 
+DECLARE @HistoryFinishingPositions int 
+DECLARE @HistoryTotalRunners [int] 
+DECLARE @HistoryComments nvarchar(200) 
+DECLARE @HistoryWeightAllowed decimal(6,2) 
+DECLARE @HistoryWeightAdjustment decimal(6,2) 
+
+
+--GET all the records to be proccessed from #tempFiles
+WHILE((SELECT COUNT(FileNumber) FROM #tempFiles)>0  )
+BEGIN
+
+	--GET top 1 record to proccess from #tempFiles
+	SELECT TOP 1 @FileNumber=FileNumber 
+				,@DBFRaceFileName = [FileName]
+				,@FileDate=RaceDateString
+				,@RaceTrackCode = RaceCode  
+		FROM #tempFiles ORDER BY FileNumber
+
+--select '#tempFiles'
+--SELECT FileNumber ,[FileName],RaceDateString,RaceCode FROM #tempFiles ORDER BY FileNumber
+	
+	--Format fileName
+	SET @DBFRaceFileName = SUBSTRING(@DBFRaceFileName,1,LEN(@DBFRaceFileName) -4)
+
+--select '@DBFRaceFileName'
+--select @DBFRaceFileName
+
+	--GET top 1 record from RaceCourse
+	SELECT TOP 1 @CountryID = FK_CountryID
+				,@TournamentName = [dbo].[PascalCase](RaceCourseName)	
+		FROM RaceCourse WHERE ImportRaceCourseCode = @RaceTrackCode AND FK_FeedID = 1
+
+--select @CountryID, @TournamentName 
+	
+	--IF Tournament name is not found from DB then set TaournamentName to RaceTrackCode
+	IF @TournamentName ='' OR @TournamentName IS NULL 
+		BEGIN
+			SET @TournamentName = @RaceTrackCode
+		END
+	
+	
+	--IF CountryID is not found from DB then deafault to South Africa  
+	IF @CountryID = 0 OR @CountryID IS NULL
+	BEGIN
+		SET  @CountryID = 198
+	END
+
+	--Reset the TournamentID
+	SET @TournamentID = 0
+	SET @FeedTournamentID = 0
+	SET @FeedTournamentID = convert(BIGINT,@FileDate)	
+
+--select @TournamentName,@CreatedDateTime,@RaceTrackCode,@CountryID,@FeedTournamentID
+
+	--MERGE tournament
+	EXEC [dbo].[MergeIntoTournament]
+			@TournamentName = @TournamentName,
+			@TournamentNameAlt = NULL,
+			@CreatedDateTime =@CreatedDateTime,
+			@RaceCourseCode = NULL,
+			@ImportRaceCourseCode = @RaceTrackCode,
+			@ImagePath = NULL,
+			@FK_SportID = 8,
+			@FK_CountryID = @CountryID,
+			@FK_FeedID = 1,
+			@FK_FeedTournamentID =  @FeedTournamentID,
+			@TournamentID = @TournamentID OUTPUT
+
+--select '@TournamentID'
+--select @TournamentID
+	
+	BEGIN TRY
+		
+		--==============================================================
+		-- TODO : Populate #tempEvent and #tempMarket from DBF files
+		--===============================================================
+		DELETE FROM #tempMarketHistory
+		DELETE FROM #tempMarket
+		DELETE FROM #tempEvent
+		
+
+	--	SET @SQL = 'INSERT INTO #tempEvent ( tempEventDescription,tempEventNumber,tempEventStartDateTime,tempEventDistance) SELECT NM,RC,[OFF],DST from OpenDataSource(''Microsoft.ACE.OLEDB.12.0'',''Data Source=C:\Dbase\; Extended Properties=DBASE III'')...' + @DBFRaceFileName
+		SET @SQL = 'INSERT INTO #tempEvent ( tempEventDescription,tempEventNumber,tempEventStartDateTime,tempEventDistance) SELECT NM,RC,[OFF],DST from OpenDataSource(''Microsoft.ACE.OLEDB.12.0'',''Data Source=H:\Incoming\Dbase\; Extended Properties=DBASE III'')...' + @DBFRaceFileName
+		EXEC(@SQL)
+
+--select '#tempEvent'		
+--select * from #tempEvent
+
+		 -- Builds Horse DBF File Name
+		SET @DBFHorseFileName = 'H' + SUBSTRING(@DBFRaceFileName,2,Len(@DBFRaceFileName) - 1)
+
+--SELECT '@DBFHorseFileName'
+--SELECT @DBFHorseFileName
+
+	-- Check if the Horse Detail file exists then process
+		IF((SELECT COUNT(*) from @files where LTrim(RTrim(SUBSTRING([FileName],0,9))) = @DBFHorseFileName)>0)
+			BEGIN
+				--SET @SQL = 'INSERT INTO #tempMarket (	tempRaceNo	,tempHorse	,tempHorseNum	,tempDrawNo	,tempFirstTimer							,[tempOwner]	,tempTrainer	,tempJockey	,tempJockeyColors	,tempBreeder	,tempSex	,tempColour	,tempWeight	,tempWeightAllowed	,tempSire	,tempDam	,tempRuns	,tempWins	,tempPlaces	,tempComments	,tempMarketOdd   ,tempHorseAge
+				--			)					SELECT	RC			,HRS		,NO				,DR			,CASE WHEN RNS = 0 THEN 1 ELSE 0 END	,OWNR			,TRNPRN			,JCKPRN		,CLRS				,BRDR			,SX			,CLR		,MSS		,ALLO				,SRE		,DM			,RNS		,WNS		,PLCS		,CMNTSUM		,ODDS1 		     ,AGE
+				--			from OpenDataSource(''Microsoft.ACE.OLEDB.12.0'',''Data Source=C:\Dbase\; Extended Properties=DBASE III'')...' + @DBFHorseFileName
+				--EXEC(@SQL)
+
+				SET @SQL = 'INSERT INTO #tempMarket (	tempRaceNo	,tempHorse	,tempHorseNum	,tempDrawNo	,tempFirstTimer							,[tempOwner]	,tempTrainer	,tempJockey	,tempJockeyColors	,tempBreeder	,tempSex	,tempColour	,tempWeight	,tempWeightAllowed	,tempSire	,tempDam	,tempRuns	,tempWins	,tempPlaces	,tempComments	,tempMarketOdd   ,tempHorseAge
+							)					SELECT	RC			,HRS		,NO				,DR			,CASE WHEN RNS = 0 THEN 1 ELSE 0 END	,OWNR			,TRNPRN			,JCKPRN		,CLRS				,BRDR			,SX			,CLR		,MSS		,ALLO				,SRE		,DM			,RNS		,WNS		,PLCS		,CMNTSUM		,ODDS1 		     ,AGE
+							from OpenDataSource(''Microsoft.ACE.OLEDB.12.0'',''Data Source=H:\Incoming\Dbase\; Extended Properties=DBASE III'')...' + @DBFHorseFileName
+				EXEC(@SQL)
+
+			END
+
+--select '#tempMarket'
+--select * from #tempMarket
+
+		-- History data for horse from winningForm
+		SET @DBFHorseHistoryFileName = 'F' + SUBSTRING(@DBFRaceFileName,2,Len(@DBFRaceFileName) - 1)
+--select @DBFHorseHistoryFileName
+
+	-- Check if the Horse history file exists then process
+		IF((SELECT COUNT(*) from @files where LTrim(RTrim(SUBSTRING([FileName],0,9))) = @DBFHorseHistoryFileName)>0)
+			BEGIN
+				--SET @SQL = 'INSERT INTO #tempMarketHistory (	tempHistoryRaceNo	,tempHistoryHorse	,tempHistoryHorseNum	,tempHistoryRaceDate	,tempHistoryRaceDistance	,tempHistoryJockey 	,tempHistoryWeight 	,tempHistoryFinishingPositions 	,tempHistoryTotalRunners	,tempHistoryComments 	,tempHistoryWeightAllowed 	,tempHistoryWeightAdjustment 
+				--			)					SELECT			RC					,HRS				,NO						,DT						,DST						,JCKPRN				,MSS				,FIN							,RNRS						,CMNT					,ALLO						,ADJ
+				--			from OpenDataSource(''Microsoft.ACE.OLEDB.12.0'',''Data Source=C:\Dbase\; Extended Properties=DBASE III'')...' + @DBFHorseHistoryFileName
+				--EXEC(@SQL)
+								SET @SQL = 'INSERT INTO #tempMarketHistory (	tempHistoryRaceNo	,tempHistoryHorse	,tempHistoryHorseNum	,tempHistoryRaceDate	,tempHistoryRaceDistance	,tempHistoryJockey 	,tempHistoryWeight 	,tempHistoryFinishingPositions 	,tempHistoryTotalRunners	,tempHistoryComments 	,tempHistoryWeightAllowed 	,tempHistoryWeightAdjustment 
+							)					SELECT			RC					,HRS				,NO						,DT						,DST						,JCKPRN				,MSS				,FIN							,RNRS						,CMNT					,ALLO						,ADJ
+							from OpenDataSource(''Microsoft.ACE.OLEDB.12.0'',''Data Source=H:\Incoming\Dbase\; Extended Properties=DBASE III'')...' + @DBFHorseHistoryFileName
+				EXEC(@SQL)
+			END
+--select '#tempMarketHistory'
+--select * from #tempMarketHistory
+
+		--==============================================================
+		-- TODO : Format Venue name for URL
+		--===============================================================
+		IF CHARINDEX(' ',@TournamentName) > 0   
+			BEGIN  
+			  Set @VenueName =  SUBSTRING(@TournamentName, 0, CHARINDEX(' ', @TournamentName))
+			END  
+		ELSE  
+			BEGIN
+				 Set @VenueName =  @TournamentName
+			END
+		--==============================================================
+		-- TODO : Proccess #tempEvent data
+		--===============================================================
+		
+		--GET all the records to be proccessed from ##tempEvent
+		WHILE ((SELECT COUNT(tempEvenID) FROM #tempEvent) >0)
+		BEGIN
+			--GET top 1 record to proccess from #tempEvent
+			SELECT TOP 1 @EventID=tempEvenID, @EventDescription = tempEventDescription, 
+			@EventNumber=tempEventNumber, 
+			@EventStartDateTime = isnull(dbo.FormatDateTime(tempEventStartDateTime,@FileDate),'1900-01-01'), 
+			@EventDistance=tempEventDistance
+			FROM #tempEvent ORDER BY tempEvenID
+
+			--Return newly inserted eventID
+			SET @INSERTED_EVENTID = 0
+
+			--MARGE INTO EVENT
+			EXEC MergeIntoEvent 
+			@INSERTED_EVENTID OUTPUT, 
+			'Race ' ,
+			null,
+			@EventDescription,
+			@EventNumber, 
+			@EventStartDateTime,
+			null,
+			@EventDistance,
+			null,
+			@TournamentID,
+			null,
+			null,
+			1,
+			1,
+			1
+
+--select '@INSERTED_EVENTID'
+--select @INSERTED_EVENTID
+		
+--commented Start
+			-- Check for antepost if > 0 then import markets
+			WHILE (SELECT COUNT(*) FROM #tempMarket WHERE tempRaceNo = @EventNumber AND tempJockey IS NOT NULL)>0 
+			BEGIN
+				SELECT TOP 1 
+				@MarketID = tempMarkertID,
+				@MarketName = tempHorse, 
+				@MarketNumber =tempHorseNum,
+				@StartPosition =tempDrawNo,	
+				@FirstTimer =tempFirstTimer,
+				@Owner = [tempOwner], 
+				@Trainer = tempTrainer, 
+				@Jockey = tempJockey, 
+				@JockeyColors  = tempJockeyColors, 
+				@Breeder  = tempBreeder, 
+				@Sex  = tempSex,
+				@Colour  = tempColour, 
+				@Weight  = tempWeight, 
+				@WeightAllowed = tempWeightAllowed,
+				@Sire  = tempSire, 
+				@Dam = tempDam, 
+				@Runs  = tempRuns, 
+				@Wins  = tempWins, 
+				@Places  = tempPlaces, 
+				@Comments  = tempComments,
+				@MarketOdd =tempMarketOdd,
+				@Age = tempHorseAge,
+				@URL = (Select CAST((SELECT[SystemSettingValue] FROM [EIS].[dbo].[SystemSettings]WHere SystemSettingName = 'SilkURL') as varchar(max)) + CAST((Select CONVERT(varchar,@EventStartDateTime,23) as [YYYY-MM-DD]) as varchar(max)) + CAST('-'as varchar) + CAST(@VenueName as varchar)+CAST('/R'as varchar)  + CAST(@EventNumber as varchar)+CAST('-'as varchar)+CAST(tempHorseNum as varchar)+ CAST('.jpg'as varchar))
+				FROM #tempMarket WHERE tempRaceNo = @EventNumber
+			  
+
+				SET @INSERTED_MarketID = 0 
+				SET @INSERTED_SilkID= 0
+				SET @MarketName= [dbo].[PascalCase](@MarketName)
+
+				-- Merge Market Data
+				EXEC MergeIntoMarket  @INSERTED_MarketID OUTPUT,@MarketName,null,@MarketNumber,null,@StartPosition, @FirstTimer,null,null,1,null,@INSERTED_EVENTID,null,null,1,1
+				
+				-- Merges Market Silk Data																				
+				--select @Owner,@Trainer,@Jockey,@JockeyColors, @Breeder,@Sex,@Colour,@Weight, @WeightAllowed, @Sire,@Dam,@Runs,@Wins,@Places,@Comments,@INSERTED_MarketID
+				EXEC MergeIntoSilk @INSERTED_SilkID OUTPUT,@Owner,@Trainer,@Jockey,@JockeyColors, @Breeder,@Sex,@Colour,@Weight, @WeightAllowed, @Sire,@Dam,@Runs,@Wins,@Places,@Comments,@INSERTED_MarketID,null,@URL,@Age
+
+--select '@INSERTED_MarketID,@EventNumber, @MarketNumber'
+--select @INSERTED_MarketID,@EventNumber, @MarketNumber
+
+				-- Get Hystory of Horse
+				WHILE (SELECT COUNT(*) FROM #tempMarketHistory WHERE tempHistoryRaceNo = @EventNumber AND tempHistoryHorseNum = @MarketNumber)>0 
+				BEGIN
+
+					SELECT TOP 1
+						@HistoryRaceNo = tempHistoryRaceNo,
+						@HistoryHorse  = tempHistoryHorse,
+						@HistoryHorseNum = tempHistoryHorseNum,
+						@HistoryRaceDate = tempHistoryRaceDate,
+						@HistoryRaceDistance = tempHistoryRaceDistance,
+						@HistoryJockey = tempHistoryJockey,
+						@HistoryWeight   = tempHistoryWeight,
+						@HistoryFinishingPositions = tempHistoryFinishingPositions,
+						@HistoryTotalRunners  = tempHistoryTotalRunners,
+						@HistoryComments  = tempHistoryComments,
+						@HistoryWeightAllowed  = tempHistoryWeightAllowed,
+						@HistoryWeightAdjustment = tempHistoryWeightAdjustment 
+					 FROM #tempMarketHistory WHERE tempHistoryRaceNo = @EventNumber  AND tempHistoryHorseNum = @MarketNumber
+
+--select '@HistoryRaceNo, @HistoryHorse,  @HistoryHorseNum,  @HistoryRaceDate ,@HistoryRaceDistance ,@HistoryJockey ,@HistoryWeight ,@HistoryFinishingPositions , @HistoryTotalRunners ,@HistoryComments ,@HistoryWeightAllowed , @HistoryWeightAdjustment, @INSERTED_MarketID'
+--select @HistoryRaceNo, @HistoryHorse,  @HistoryHorseNum,  @HistoryRaceDate ,@HistoryRaceDistance ,@HistoryJockey ,@HistoryWeight ,@HistoryFinishingPositions , @HistoryTotalRunners ,@HistoryComments ,@HistoryWeightAllowed , @HistoryWeightAdjustment, @INSERTED_MarketID
+					
+					EXEC MergeIntoSilkHistory @HistoryRaceNo, @HistoryHorse,  @HistoryHorseNum,  @HistoryRaceDate ,@HistoryRaceDistance ,@HistoryJockey ,@HistoryWeight ,@HistoryFinishingPositions , @HistoryTotalRunners ,@HistoryComments ,@HistoryWeightAllowed , @HistoryWeightAdjustment, @INSERTED_MarketID
+					
+					DELETE FROM #tempMarketHistory WHERE tempHistoryRaceNo = @EventNumber  AND tempHistoryHorseNum = @MarketNumber and tempHistoryRaceDate = @HistoryRaceDate
+				END
+				--Delete proccessed market record from #tempMarket
+			--	DELETE FROM #tempMarketHistory
+				DELETE FROM #tempMarket WHERE tempMarkertID =@MarketID
+			END
+			--	DELETE FROM #tempMarket
+			--Delete proccessed event record from  #tempEvent
+			DELETE FROM #tempEvent WHERE tempEvenID = @EventID
+		END
+--commented END
+	END TRY
+	BEGIN CATCH
+		--PRINT @@Error
+		SELECT
+		ERROR_NUMBER() AS ErrorNumber,
+		ERROR_SEVERITY() AS ErrorSeverity,
+		ERROR_STATE() AS ErrorState,
+		ERROR_PROCEDURE() AS ErrorProcedure,
+		ERROR_LINE() AS ErrorLine,
+		ERROR_MESSAGE() AS ErrorMessage;
+		CONTINUE 
+	END CATCH
+
+	--Delete proccessed file record from  #tempFiles
+	DELETE FROM #tempFiles WHERE FileNumber = @FileNumber
+
+	-- Moves DBF Files that have been imported
+	SET @DBFRaceFileName = @DBFRaceFileName + '.dbf'
+	SET @DBFHorseFileName = @DBFHorseFileName + '.dbf'
+	SET @DBFHorseHistoryFileName = @DBFHorseHistoryFileName + '.dbf'
+	
+
+--	SELECT 'MoveFile'
+	EXEC MoveFile  @DBFRaceFileName 
+	EXEC MoveFile  @DBFHorseFileName 
+	EXEC MoveFile  @DBFHorseHistoryFileName 
+
+END
+
+-- MOVE Left over old and unprocessed files to USED folder and keep the DBASE folder clean of unwanted files.
+	DECLARE @Remainingfiles TABLE (ID int IDENTITY(1,1), [RemainingFileName] varchar(100))
+	INSERT INTO @Remainingfiles 
+--	EXEC  xp_cmdshell 'dir c:\dbase\*.dbf /b' 
+
+EXEC  xp_cmdshell 'dir H:\Incoming\dbase\*.dbf /b' 
+
+	Declare @FileCount int = 1
+
+	WHILE((SELECT COUNT(*) from @Remainingfiles where ID = @FileCount)>0)
+	BEGIN
+		SELECT TOP 1 @DBFRaceFileName = [RemainingFileName] from @Remainingfiles WHERE ID = @FileCount
+	
+		EXEC MoveFile  @DBFRaceFileName 
+		SET @FileCount = @FileCount + 1
+
+	END
+
+
+
+
+DROP TABLE #tempFiles
+DROP TABLE #tempEvent
+DROP TABLE  #tempMarket
+DROP TABLE #tempMarketHistory
+
+END
